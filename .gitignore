@@ -1,3 +1,4 @@
 freshplan.txt
 /scripts
 /venv
+.env

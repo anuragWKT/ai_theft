@@ -45,6 +45,8 @@ class AccusationResult:
 
 TIME_AMPM_RE = re.compile(r"\b(1[0-2]|[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b", re.IGNORECASE)
 TIME_COMPACT_RE = re.compile(r"\b(1[0-2])([0-5][0-9])\s*(am|pm)\b", re.IGNORECASE)
+TIME_AMBIGUOUS_RE = re.compile(r"\b(1[0-2]|[1-9]):([0-5][0-9])\b")
+TIME_HOUR_ONLY_RE = re.compile(r"\b(1[0-2]|[1-9])\b")
 
 
 def load_party_case(case_path: str | Path) -> PartyCase:
@@ -75,28 +77,60 @@ def parse_time_label(text: str) -> Optional[str]:
     return None
 
 
+def parse_time_label_party_default(text: str) -> Optional[str]:
+    explicit = parse_time_label(text)
+    if explicit:
+        return explicit
+
+    ambiguous_match = TIME_AMBIGUOUS_RE.search(text)
+    if ambiguous_match:
+        hour = int(ambiguous_match.group(1))
+        minute = int(ambiguous_match.group(2))
+        meridian = "AM" if hour == 12 else "PM"
+        return f"{hour}:{minute:02d} {meridian}"
+
+    hour_only_match = TIME_HOUR_ONLY_RE.search(text)
+    if hour_only_match:
+        hour = int(hour_only_match.group(1))
+        meridian = "AM" if hour == 12 else "PM"
+        return f"{hour}:00 {meridian}"
+
+    return None
+
+
 def parse_intent(user_text: str) -> UserIntent:
     raw = user_text.strip()
     lowered = raw.lower()
 
-    if lowered in {"help", "h", "?"}:
+    if lowered in {"help", "h", "?", "hwlp", "hlep", "hep", "halp"}:
         return UserIntent(kind="help", raw_text=raw)
     if lowered == "status":
         return UserIntent(kind="status", raw_text=raw)
 
-    accusation_markers = ["accuse", "you lied", "you stole", "thief", "stole"]
-    if any(marker in lowered for marker in accusation_markers):
-        time_label = parse_time_label(lowered)
+    accusation_markers = ["you lied", "you stole", "i accuse", "thief"]
+    explicit_accuse = lowered.startswith("accuse")
+    maybe_accuse = any(marker in lowered for marker in accusation_markers)
+    time_label = parse_time_label_party_default(lowered)
+
+    if explicit_accuse or (maybe_accuse and time_label is not None):
         reason = raw
         return UserIntent(kind="accuse", raw_text=raw, time=time_label, reason=reason)
 
-    if lowered.startswith("camera"):
-        time_label = parse_time_label(lowered)
+    if lowered.startswith("camera") or lowered.startswith("camerra") or lowered.startswith("camra"):
         return UserIntent(kind="camera", raw_text=raw, time=time_label)
 
-    sequence_markers = ["after that", "then", "next", "after coming", "what did you do after"]
+    sequence_markers = [
+        "after that",
+        "then",
+        "next",
+        "after coming",
+        "what did you do after",
+        "arrive",
+        "arrived",
+        "when did you come",
+        "when did you arrive",
+    ]
     ask_mode: AskMode = "sequence" if any(marker in lowered for marker in sequence_markers) else "general"
-    time_label = parse_time_label(lowered)
     return UserIntent(kind="ask", raw_text=raw, time=time_label, ask_mode=ask_mode)
 
 
@@ -105,10 +139,46 @@ class GameEngine:
         self.case = case
         self.state = GameState(current_time=case.slots[0].time)
         self.claims: List[ClaimRecord] = []
+        self.contradiction_reasons: List[str] = []
         self._slots_by_time: Dict[str, TimelineSlot] = {slot.time: slot for slot in case.slots}
+        self._slot_times: List[str] = [slot.time for slot in case.slots]
+        self._known_locations: List[str] = [slot.location for slot in case.slots]
         self._camera_by_time: Dict[str, CameraEvent] = {
             event.time: event for event in case.camera if event.coverage
         }
+
+    def infer_location_from_text(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        for location in self._known_locations:
+            if location.lower() in lowered:
+                return location
+        return None
+
+    def resolve_followup_time(self, intent: UserIntent) -> UserIntent:
+        if intent.kind != "ask":
+            return intent
+        if intent.time:
+            return intent
+        if intent.ask_mode != "sequence":
+            return intent
+
+        try:
+            index = self._slot_times.index(self.state.current_time)
+        except ValueError:
+            index = 0
+
+        next_index = min(index + 1, len(self._slot_times) - 1)
+        return UserIntent(
+            kind=intent.kind,
+            raw_text=intent.raw_text,
+            time=self._slot_times[next_index],
+            reason=intent.reason,
+            ask_mode=intent.ask_mode,
+        )
+
+    def note_turn_time(self, intent: UserIntent) -> None:
+        if intent.time and intent.time in self._slots_by_time:
+            self.state.current_time = intent.time
 
     def choose_lie_strategy(self, intent: UserIntent) -> LieStrategy:
         if intent.kind != "ask":
@@ -124,9 +194,12 @@ class GameEngine:
                 return "consistency-protect"
             if slot and slot.suspicious:
                 return "redirect"
-            if intent.ask_mode == "sequence":
+            if slot:
                 return "truthful"
             return "vague"
+
+        if intent.ask_mode == "sequence":
+            return "truthful"
 
         if intent.ask_mode == "general":
             return "vague"
@@ -222,6 +295,35 @@ class GameEngine:
 
         return ContradictionResult(bool(reasons), reasons)
 
+    def evaluate_and_store_contradictions(self, claim: ClaimRecord) -> ContradictionResult:
+        checks = [
+            self.compare_claim_to_history(claim),
+            self.compare_claim_to_camera(claim),
+            self.compare_claim_to_timeline(claim),
+        ]
+        reasons: List[str] = []
+        for result in checks:
+            reasons.extend(result.reasons)
+
+        unique_new = []
+        for reason in reasons:
+            if reason not in self.contradiction_reasons:
+                self.contradiction_reasons.append(reason)
+                unique_new.append(reason)
+
+        if unique_new:
+            self.state.contradiction_count += len(unique_new)
+
+        return ContradictionResult(bool(reasons), reasons)
+
+    def has_direct_camera_proof(self, time_label: str) -> bool:
+        event = self.get_camera_event(time_label)
+        if not event:
+            return False
+        observed = event.observed_action.lower()
+        proof_markers = ["gold chain", "chain visible", "holding chain", "stole", "steal", "theft"]
+        return any(marker in observed for marker in proof_markers)
+
     def evaluate_accusation(self, intent: UserIntent) -> AccusationResult:
         if intent.kind != "accuse":
             return AccusationResult(
@@ -245,20 +347,16 @@ class GameEngine:
 
         theft_time_match = intent.time == self.case.theft.time
 
-        contradiction_found = False
-        for claim in self.claims:
-            if claim.time != intent.time:
-                continue
-            history_cmp = self.compare_claim_to_history(claim)
-            camera_cmp = self.compare_claim_to_camera(claim)
-            timeline_cmp = self.compare_claim_to_timeline(claim)
-            if history_cmp.has_contradiction or camera_cmp.has_contradiction or timeline_cmp.has_contradiction:
-                contradiction_found = True
-                break
-
+        contradiction_found = any(
+            reason.startswith(f"Claim mismatch at {intent.time}")
+            or reason.startswith(f"Camera mismatch at {intent.time}")
+            or reason.startswith(f"Timeline mismatch at {intent.time}")
+            for reason in self.contradiction_reasons
+        )
         reason_text = (intent.reason or "").lower()
-        camera_reason = "camera" in reason_text and self.get_camera_event(intent.time) is not None
-        evidence_sufficient = contradiction_found or camera_reason
+        cites_camera = any(token in reason_text for token in ["camera", "footage", "video"])
+        direct_camera_proof = cites_camera and self.has_direct_camera_proof(intent.time)
+        evidence_sufficient = contradiction_found or direct_camera_proof
 
         confession = theft_time_match and evidence_sufficient
         self.state.confession_unlocked = confession
@@ -268,7 +366,11 @@ class GameEngine:
                 "Confession unlocked: accusation time matches theft time and evidence is sufficient."
             )
         elif theft_time_match:
-            message = "Correct theft time but insufficient evidence. Keep cross-questioning Alex."
+            message = (
+                "Correct theft time but insufficient evidence. "
+                "Use camera at that time and present a contradiction in your accusation "
+                "(example: 'accuse 9:30 pm camera shows dressing room entry')."
+            )
         else:
             message = "Accusation noted, but theft time does not match case truth."
 

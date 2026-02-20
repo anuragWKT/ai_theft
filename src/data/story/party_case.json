@@ -151,16 +151,23 @@
       "coverage": true
     },
     {
+      "time": "8:30 PM",
+      "location": "Dressing Room Door",
+      "observed_action": "Alex paused near the dressing room handle and looked around before stepping away.",
+      "observed_people": ["Alex"],
+      "coverage": true
+    },
+    {
       "time": "9:30 PM",
       "location": "Dressing Room Door",
-      "observed_action": "Alex entering dressing room alone.",
+      "observed_action": "Alex entering dressing room alone and briefly seen tucking a gold chain into his hand while exiting.",
       "observed_people": ["Alex"],
       "coverage": true
     },
     {
       "time": "10:00 PM",
       "location": "Washroom Corridor",
-      "observed_action": "Alex leaving quickly while adjusting jacket.",
+      "observed_action": "Alex leaving quickly while adjusting jacket, with a gold chain visible in hand for a moment.",
       "observed_people": ["Alex"],
       "coverage": true
     },
