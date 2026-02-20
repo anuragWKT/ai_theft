@@ -10,6 +10,13 @@ from src.core.models import CameraEvent, ClaimRecord, GameState, PartyCase, Time
 
 IntentKind = Literal["ask", "camera", "accuse", "status", "help"]
 AskMode = Literal["sequence", "general"]
+LieStrategy = Literal[
+    "truthful",
+    "vague",
+    "redirect",
+    "fabricate",
+    "consistency-protect",
+]
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,29 @@ class GameEngine:
         self._camera_by_time: Dict[str, CameraEvent] = {
             event.time: event for event in case.camera if event.coverage
         }
+
+    def choose_lie_strategy(self, intent: UserIntent) -> LieStrategy:
+        if intent.kind != "ask":
+            return "vague"
+
+        if intent.time:
+            slot = self._slots_by_time.get(intent.time)
+            camera_covered = self.get_camera_event(intent.time) is not None
+
+            if slot and slot.theft:
+                return "fabricate"
+            if slot and slot.suspicious and camera_covered:
+                return "consistency-protect"
+            if slot and slot.suspicious:
+                return "redirect"
+            if intent.ask_mode == "sequence":
+                return "truthful"
+            return "vague"
+
+        if intent.ask_mode == "general":
+            return "vague"
+
+        return "redirect"
 
     def record_claim(
         self,
