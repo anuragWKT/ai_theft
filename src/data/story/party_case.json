@@ -1,0 +1,180 @@
+{
+  "case_meta": {
+    "title": "Birthday Party Gold Chain Theft",
+    "date": "2026-02-14",
+    "venue": "Lakeview Community Hall",
+    "victim_name": "Maya",
+    "suspect_name": "Alex"
+  },
+  "slots": [
+    {
+      "time": "5:00 PM",
+      "location": "Entrance",
+      "action": "Alex arrived and greeted the host.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Rohan", "Host"]
+    },
+    {
+      "time": "5:30 PM",
+      "location": "Main Hall",
+      "action": "Alex chatted with guests near the photo corner.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Nisha"]
+    },
+    {
+      "time": "6:00 PM",
+      "location": "Buffet Area",
+      "action": "Alex got snacks and stood near the drinks table.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Caterer"]
+    },
+    {
+      "time": "6:30 PM",
+      "location": "Stage",
+      "action": "Alex watched games and clapped with others.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["DJ"]
+    },
+    {
+      "time": "7:00 PM",
+      "location": "Cake Table",
+      "action": "Alex helped move gift bags away from the cake table.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Maya", "Ritu"]
+    },
+    {
+      "time": "7:30 PM",
+      "location": "Garden Side",
+      "action": "Alex stepped outside and took a phone call.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Security Guard"]
+    },
+    {
+      "time": "8:00 PM",
+      "location": "Hallway Near Dressing Room",
+      "action": "Alex walked past the dressing room corridor and looked around.",
+      "theft": false,
+      "suspicious": true,
+      "witnesses": ["Cleaner"]
+    },
+    {
+      "time": "8:30 PM",
+      "location": "Dressing Room Door",
+      "action": "Alex paused near the dressing room but left when guests approached.",
+      "theft": false,
+      "suspicious": true,
+      "witnesses": ["Rohan"]
+    },
+    {
+      "time": "9:00 PM",
+      "location": "Main Hall",
+      "action": "Alex returned to the dance floor and mingled.",
+      "theft": false,
+      "suspicious": true,
+      "witnesses": ["DJ", "Nisha"]
+    },
+    {
+      "time": "9:30 PM",
+      "location": "Dressing Room",
+      "action": "Alex entered the dressing room and stole Maya's gold chain from the vanity tray.",
+      "theft": true,
+      "suspicious": true,
+      "witnesses": []
+    },
+    {
+      "time": "10:00 PM",
+      "location": "Washroom Corridor",
+      "action": "Alex adjusted jacket and moved quickly toward the hall.",
+      "theft": false,
+      "suspicious": true,
+      "witnesses": ["Cleaner"]
+    },
+    {
+      "time": "10:30 PM",
+      "location": "Buffet Area",
+      "action": "Alex served dessert to appear normal.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Caterer", "Ritu"]
+    },
+    {
+      "time": "11:00 PM",
+      "location": "Main Hall",
+      "action": "Alex sat with friends and watched the final dance.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Nisha", "Rohan"]
+    },
+    {
+      "time": "11:30 PM",
+      "location": "Exit Gate",
+      "action": "Alex waited near the parking side and avoided long conversations.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Security Guard"]
+    },
+    {
+      "time": "12:00 AM",
+      "location": "Exit Gate",
+      "action": "Alex left when the party wrapped up and guests started dispersing.",
+      "theft": false,
+      "suspicious": false,
+      "witnesses": ["Host"]
+    }
+  ],
+  "camera": [
+    {
+      "time": "5:30 PM",
+      "location": "Main Hall",
+      "observed_action": "Alex speaking with guests near photo corner.",
+      "observed_people": ["Alex", "Nisha"],
+      "coverage": true
+    },
+    {
+      "time": "7:30 PM",
+      "location": "Garden Side",
+      "observed_action": "Alex on a phone call near side gate.",
+      "observed_people": ["Alex"],
+      "coverage": true
+    },
+    {
+      "time": "8:00 PM",
+      "location": "Hallway Near Dressing Room",
+      "observed_action": "Alex pacing in corridor and looking toward dressing room.",
+      "observed_people": ["Alex"],
+      "coverage": true
+    },
+    {
+      "time": "9:30 PM",
+      "location": "Dressing Room Door",
+      "observed_action": "Alex entering dressing room alone.",
+      "observed_people": ["Alex"],
+      "coverage": true
+    },
+    {
+      "time": "10:00 PM",
+      "location": "Washroom Corridor",
+      "observed_action": "Alex leaving quickly while adjusting jacket.",
+      "observed_people": ["Alex"],
+      "coverage": true
+    },
+    {
+      "time": "11:00 PM",
+      "location": "Main Hall",
+      "observed_action": "Alex seated in the second row watching dance.",
+      "observed_people": ["Alex", "Rohan"],
+      "coverage": true
+    }
+  ],
+  "theft": {
+    "time": "9:30 PM",
+    "stolen_item": "Gold chain",
+    "location": "Dressing Room"
+  }
+}
