@@ -43,10 +43,10 @@ class AccusationResult:
     message: str
 
 
-TIME_AMPM_RE = re.compile(r"\b(1[0-2]|[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b", re.IGNORECASE)
-TIME_COMPACT_RE = re.compile(r"\b(1[0-2])([0-5][0-9])\s*(am|pm)\b", re.IGNORECASE)
-TIME_AMBIGUOUS_RE = re.compile(r"\b(1[0-2]|[1-9]):([0-5][0-9])\b")
-TIME_HOUR_ONLY_RE = re.compile(r"\b(1[0-2]|[1-9])\b")
+TIME_AMPM_RE = re.compile(r"\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm)\b", re.IGNORECASE)
+TIME_COMPACT_RE = re.compile(r"\b(1[0-2]|0?[1-9])([0-5][0-9])\s*(am|pm)\b", re.IGNORECASE)
+TIME_AMBIGUOUS_RE = re.compile(r"\b(1[0-2]|0?[1-9]):([0-5][0-9])\b")
+TIME_HOUR_ONLY_RE = re.compile(r"\b(1[0-2]|0?[1-9])\b")
 
 
 def load_party_case(case_path: str | Path) -> PartyCase:
@@ -101,36 +101,46 @@ def parse_time_label_party_default(text: str) -> Optional[str]:
 def parse_intent(user_text: str) -> UserIntent:
     raw = user_text.strip()
     lowered = raw.lower()
+    lowered_clean = re.sub(r"[^a-z0-9: ]+", " ", lowered)
+    lowered_clean = re.sub(r"\s+", " ", lowered_clean).strip()
 
-    if lowered in {"help", "h", "?", "hwlp", "hlep", "hep", "halp"}:
+    if lowered_clean in {"help", "h", "", "hwlp", "hlep", "hep", "halp"} or lowered == "?":
         return UserIntent(kind="help", raw_text=raw)
-    if lowered == "status":
+    if lowered_clean == "status":
         return UserIntent(kind="status", raw_text=raw)
 
     accusation_markers = ["you lied", "you stole", "i accuse", "thief"]
-    explicit_accuse = lowered.startswith("accuse")
-    maybe_accuse = any(marker in lowered for marker in accusation_markers)
-    time_label = parse_time_label_party_default(lowered)
+    explicit_accuse = lowered_clean.startswith("accuse") or lowered_clean.startswith("accused")
+    maybe_accuse = any(marker in lowered_clean for marker in accusation_markers)
+    time_label = parse_time_label_party_default(lowered_clean)
 
     if explicit_accuse or (maybe_accuse and time_label is not None):
         reason = raw
         return UserIntent(kind="accuse", raw_text=raw, time=time_label, reason=reason)
 
-    if lowered.startswith("camera") or lowered.startswith("camerra") or lowered.startswith("camra"):
+    if (
+        lowered_clean.startswith("camera")
+        or lowered_clean.startswith("camerra")
+        or lowered_clean.startswith("camra")
+    ):
         return UserIntent(kind="camera", raw_text=raw, time=time_label)
 
     sequence_markers = [
         "after that",
+        "after the that",
+        "after this",
+        "afterwards",
         "then",
         "next",
         "after coming",
+        "what you do after",
         "what did you do after",
         "arrive",
         "arrived",
         "when did you come",
         "when did you arrive",
     ]
-    ask_mode: AskMode = "sequence" if any(marker in lowered for marker in sequence_markers) else "general"
+    ask_mode: AskMode = "sequence" if any(marker in lowered_clean for marker in sequence_markers) else "general"
     return UserIntent(kind="ask", raw_text=raw, time=time_label, ask_mode=ask_mode)
 
 
@@ -146,6 +156,66 @@ class GameEngine:
         self._camera_by_time: Dict[str, CameraEvent] = {
             event.time: event for event in case.camera if event.coverage
         }
+
+    def _time_index(self, time_label: Optional[str]) -> Optional[int]:
+        if not time_label:
+            return None
+        try:
+            return self._slot_times.index(time_label)
+        except ValueError:
+            return None
+
+    def _claims_left_or_went_home(self, raw_text: str) -> bool:
+        lowered = raw_text.lower()
+        markers = ["left", "went home", "go home", "going home", "headed home", "heading home"]
+        return any(marker in lowered for marker in markers)
+
+    def _camera_action_looks_like_departure(self, observed_action: str) -> bool:
+        lowered = observed_action.lower()
+        leave_markers = [
+            "left",
+            "leaving",
+            "leave",
+            "exiting",
+            "exit",
+            "heading out",
+            "headed out",
+            "toward exit",
+            "towards exit",
+            "parking",
+        ]
+        return any(marker in lowered for marker in leave_markers)
+
+    def _extract_leave_time(self, raw_text: str) -> Optional[str]:
+        lowered = raw_text.lower()
+        if not self._claims_left_or_went_home(lowered):
+            return None
+        return parse_time_label_party_default(lowered)
+
+    def _extract_arrival_time(self, raw_text: str) -> Optional[str]:
+        lowered = raw_text.lower()
+        markers = ["arrived", "arrive", "came", "come in", "reached"]
+        if not any(marker in lowered for marker in markers):
+            return None
+        return parse_time_label_party_default(lowered)
+
+    def _likely_party_presence_claim(self, claim: ClaimRecord) -> bool:
+        if claim.claimed_location:
+            return True
+        lowered = claim.raw_text.lower()
+        party_markers = [
+            "at the party",
+            "in the hall",
+            "near",
+            "with guests",
+            "on the dance floor",
+            "buffet",
+            "stage",
+            "dressing room",
+            "garden",
+            "cake table",
+        ]
+        return any(marker in lowered for marker in party_markers)
 
     def infer_location_from_text(self, text: str) -> Optional[str]:
         lowered = text.lower()
@@ -226,49 +296,113 @@ class GameEngine:
         return self._camera_by_time.get(time_label)
 
     def compare_claim_to_history(self, claim: ClaimRecord) -> ContradictionResult:
-        if not claim.time:
-            return ContradictionResult(False, [])
-
         reasons: List[str] = []
+        claim_time_idx = self._time_index(claim.time)
+        claim_leave_time = self._extract_leave_time(claim.raw_text)
+        claim_leave_idx = self._time_index(claim_leave_time)
+        claim_arrival_time = self._extract_arrival_time(claim.raw_text)
+
         for previous in self.claims[:-1]:
-            if previous.time != claim.time:
-                continue
-            if previous.claimed_location and claim.claimed_location:
-                if previous.claimed_location.strip().lower() != claim.claimed_location.strip().lower():
+            previous_time_idx = self._time_index(previous.time)
+
+            if claim.time and previous.time == claim.time:
+                if previous.claimed_location and claim.claimed_location:
+                    if previous.claimed_location.strip().lower() != claim.claimed_location.strip().lower():
+                        reasons.append(
+                            f"Claim mismatch at {claim.time}: location changed from "
+                            f"'{previous.claimed_location}' to '{claim.claimed_location}'."
+                        )
+                if previous.claimed_action and claim.claimed_action:
+                    if previous.claimed_action.strip().lower() != claim.claimed_action.strip().lower():
+                        reasons.append(
+                            f"Claim mismatch at {claim.time}: action changed from "
+                            f"'{previous.claimed_action}' to '{claim.claimed_action}'."
+                        )
+
+            previous_leave_time = self._extract_leave_time(previous.raw_text)
+            previous_leave_idx = self._time_index(previous_leave_time)
+            if previous_leave_time and claim_time_idx is not None and previous_leave_idx is not None:
+                if claim_time_idx > previous_leave_idx and self._likely_party_presence_claim(claim):
                     reasons.append(
-                        f"Claim mismatch at {claim.time}: location changed from "
-                        f"'{previous.claimed_location}' to '{claim.claimed_location}'."
+                        f"Claim timeline mismatch: previously said Alex left at {previous_leave_time}, "
+                        f"but later described being active at {claim.time}."
                     )
-            if previous.claimed_action and claim.claimed_action:
-                if previous.claimed_action.strip().lower() != claim.claimed_action.strip().lower():
+
+            if claim_leave_time and claim_leave_idx is not None and previous_time_idx is not None:
+                if previous_time_idx > claim_leave_idx and self._likely_party_presence_claim(previous):
                     reasons.append(
-                        f"Claim mismatch at {claim.time}: action changed from "
-                        f"'{previous.claimed_action}' to '{claim.claimed_action}'."
+                        f"Claim timeline mismatch: says Alex left at {claim_leave_time}, "
+                        f"but earlier claim places Alex active at {previous.time}."
                     )
+
+            previous_arrival_time = self._extract_arrival_time(previous.raw_text)
+            if claim_arrival_time and previous_arrival_time and claim_arrival_time != previous_arrival_time:
+                reasons.append(
+                    f"Claim mismatch on arrival time: changed from {previous_arrival_time} to {claim_arrival_time}."
+                )
+
+            if claim_leave_time and previous_leave_time and claim_leave_time != previous_leave_time:
+                reasons.append(
+                    f"Claim mismatch on leaving time: changed from {previous_leave_time} to {claim_leave_time}."
+                )
 
         return ContradictionResult(bool(reasons), reasons)
 
     def compare_claim_to_camera(self, claim: ClaimRecord) -> ContradictionResult:
-        if not claim.time:
-            return ContradictionResult(False, [])
-
-        camera_event = self.get_camera_event(claim.time)
-        if not camera_event:
-            return ContradictionResult(False, [])
-
         reasons: List[str] = []
-        if claim.claimed_location:
-            if claim.claimed_location.strip().lower() != camera_event.location.strip().lower():
-                reasons.append(
-                    f"Camera mismatch at {claim.time}: claim says '{claim.claimed_location}' "
-                    f"but camera shows '{camera_event.location}'."
-                )
 
-        if claim.claimed_action:
-            if claim.claimed_action.strip().lower() not in camera_event.observed_action.strip().lower():
-                reasons.append(
-                    f"Camera mismatch at {claim.time}: claimed action differs from camera observation."
-                )
+        if claim.time:
+            camera_event = self.get_camera_event(claim.time)
+            if camera_event:
+                if claim.claimed_location:
+                    if claim.claimed_location.strip().lower() != camera_event.location.strip().lower():
+                        reasons.append(
+                            f"Camera mismatch at {claim.time}: claim says '{claim.claimed_location}' "
+                            f"but camera shows '{camera_event.location}'."
+                        )
+
+                if claim.claimed_action:
+                    if claim.claimed_action.strip().lower() not in camera_event.observed_action.strip().lower():
+                        reasons.append(
+                            f"Camera mismatch at {claim.time}: claimed action differs from camera observation."
+                        )
+
+        if self._claims_left_or_went_home(claim.raw_text):
+            leave_time = self._extract_leave_time(claim.raw_text)
+            reference_time = leave_time or claim.time or self.state.current_time
+            claim_idx = self._time_index(reference_time)
+
+            if claim_idx is not None:
+                same_time_events = [
+                    event
+                    for event in self.case.camera
+                    if event.coverage
+                    and event.time == reference_time
+                    and any(person.lower() == "alex" for person in event.observed_people)
+                    and event.location.strip().lower() != "exit gate"
+                    and not self._camera_action_looks_like_departure(event.observed_action)
+                ]
+                if same_time_events:
+                    first_same = same_time_events[0]
+                    reasons.append(
+                        f"Camera mismatch at {reference_time}: claim says Alex left, but camera shows Alex at "
+                        f"{first_same.location}."
+                    )
+
+                later_camera_events = [
+                    event
+                    for event in self.case.camera
+                    if self._time_index(event.time) is not None
+                    and self._time_index(event.time) > claim_idx
+                    and event.coverage
+                    and any(person.lower() == "alex" for person in event.observed_people)
+                ]
+                if later_camera_events:
+                    first_event = later_camera_events[0]
+                    reasons.append(
+                        f"Camera mismatch after {reference_time}: claim says Alex left, but camera shows Alex at "
+                        f"{first_event.time} near {first_event.location}."
+                    )
 
         return ContradictionResult(bool(reasons), reasons)
 
@@ -354,7 +488,10 @@ class GameEngine:
             for reason in self.contradiction_reasons
         )
         reason_text = (intent.reason or "").lower()
-        cites_camera = any(token in reason_text for token in ["camera", "footage", "video"])
+        cites_camera = any(
+            token in reason_text
+            for token in ["camera", "footage", "video", "seen", "saw", "gold chain", "chain"]
+        )
         direct_camera_proof = cites_camera and self.has_direct_camera_proof(intent.time)
         evidence_sufficient = contradiction_found or direct_camera_proof
 

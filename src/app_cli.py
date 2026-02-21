@@ -12,38 +12,6 @@ from src.engine.game_logic import GameEngine, UserIntent, load_party_case, parse
 from src.rag.store import RAGStore
 
 
-def _help_text() -> str:
-    return (
-        "Commands:\n"
-        "- ask anything about the party timeline\n"
-        "- camera <time> (example: camera 9:30 pm)\n"
-        "- accuse <time> <reason> (example: accuse 9:30 pm camera shows door entry)\n"
-        "- status\n"
-        "- tips\n"
-        "- help\n"
-        "- exit"
-    )
-
-
-def _tips_text() -> str:
-    return (
-        "How to catch Alex:\n"
-        "1) Lock timeline first: ask what he did at 7:30, 8:00, 8:30, 9:30, 10:00.\n"
-        "2) Use camera checks on same slots: camera 8:00, camera 8:30, camera 9:30.\n"
-        "3) Re-ask one slot in different wording to force consistency.\n"
-        "4) Build contradiction count (see status).\n"
-        "5) Accuse with time + evidence, example:\n"
-        "   accuse 9:30 pm camera footage shows Alex with chain near dressing room"
-    )
-
-
-def _status_text(game: GameEngine) -> str:
-    return (
-        f"Status: claims={len(game.claims)}, contradictions={game.state.contradiction_count}, "
-        f"accusation_made={game.state.accusation_made}, confession_unlocked={game.state.confession_unlocked}"
-    )
-
-
 def create_runtime(project_root: Optional[Path] = None) -> tuple[GameEngine, DialogueEngine]:
     root = project_root or Path(__file__).resolve().parents[1]
     load_dotenv(root / ".env")
@@ -65,7 +33,7 @@ def create_runtime(project_root: Optional[Path] = None) -> tuple[GameEngine, Dia
 def process_turn(user_input: str, game: GameEngine, dialogue: DialogueEngine) -> Dict[str, Any]:
     text = user_input.strip()
     if not text:
-        return {"message": "Please type a question or command.", "finished": False}
+        return {"message": "Please ask a timeline, camera, or accusation question.", "finished": False}
 
     lowered = text.lower()
 
@@ -74,14 +42,11 @@ def process_turn(user_input: str, game: GameEngine, dialogue: DialogueEngine) ->
 
     intent: UserIntent = parse_intent(text)
 
-    if intent.kind == "help":
-        return {"message": _help_text(), "finished": False}
-
-    if intent.kind == "status":
-        return {"message": _status_text(game), "finished": False}
-
-    if lowered in {"tips", "tip"}:
-        return {"message": _tips_text(), "finished": False}
+    if intent.kind in {"help", "status"} or lowered in {"tips", "tip"}:
+        return {
+            "message": "Command mode is disabled in voice play. Ask timeline, camera, or accuse questions.",
+            "finished": False,
+        }
 
     if intent.kind == "camera":
         if not intent.time:
@@ -100,12 +65,9 @@ def process_turn(user_input: str, game: GameEngine, dialogue: DialogueEngine) ->
     if intent.kind == "accuse":
         result = game.evaluate_accusation(intent)
         if result.confession:
-            confession_text = (
-                "Alex: Alright... I admit it. I stole the gold chain. "
-                "I thought I could take it without anyone noticing."
-            )
+            confession_text = dialogue.generate_confession(text)
             return {
-                "message": f"{result.message}\n{confession_text}",
+                "message": f"{result.message}\nAlex: {confession_text}",
                 "finished": True,
                 "confession": True,
             }
@@ -144,7 +106,7 @@ def main() -> None:
 
     print("=== Birthday Party Interrogation ===")
     print("You are questioning Alex about the missing gold chain.")
-    print("Type 'help' for commands.")
+    print("Ask timeline questions, use camera checks, then accuse with evidence.")
 
     while True:
         user_input = input("\nYou: ")

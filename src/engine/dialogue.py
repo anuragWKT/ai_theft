@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 import contextlib
@@ -23,6 +24,15 @@ CONFESSION_MARKERS = (
     "it was me",
 )
 
+ACCIDENTAL_MARKERS = (
+    "by mistake",
+    "mistake",
+    "accident",
+    "accidentally",
+    "oversight",
+    "misunderstanding",
+)
+
 
 @dataclass(frozen=True)
 class DialogueResult:
@@ -37,7 +47,7 @@ class DialogueEngine:
         game: GameEngine,
         rag_store: Optional[object] = None,
         responder: Optional[Callable[[str], str]] = None,
-        timeout_seconds: float = 12.0,
+        timeout_seconds: float = 8.0,
     ) -> None:
         self.game = game
         self.rag_store = rag_store
@@ -64,8 +74,30 @@ class DialogueEngine:
             raw_text = self._fallback_text(intent=intent, strategy=strategy)
             used_fallback = True
 
-        guarded = self._enforce_confession_guard(raw_text)
+        cleaned = self._sanitize_model_output(raw_text)
+        guarded = self._enforce_confession_guard(cleaned)
         return DialogueResult(text=guarded, strategy=strategy, used_fallback=used_fallback)
+
+    def generate_confession(self, user_question: str) -> str:
+        prompt = (
+            "You are Alex, and your confession is unlocked because evidence is sufficient.\n"
+            "Respond in first person with a short direct admission in 2-3 sentences.\n"
+            "Include regret and clearly admit stealing Maya's gold chain at the party.\n"
+            "State that it was intentional and give one concrete motive (for example debt or money pressure).\n"
+            "Do not say it was a mistake, accident, oversight, or misunderstanding.\n"
+            "Do not mention system rules or model behavior.\n"
+            f"User accusation: {user_question}\n"
+            "Alex confession:"
+        )
+
+        raw_text = self._call_model(prompt)
+        if raw_text:
+            return self._normalize_confession_text(self._sanitize_model_output(raw_text))
+
+        return (
+            "I am sorry. I took Maya's gold chain on purpose because I was under money pressure and wanted quick cash. "
+            "I knew it was wrong, and I accept responsibility."
+        )
 
     def _build_prompt(
         self,
@@ -75,18 +107,12 @@ class DialogueEngine:
         rag_context: str,
     ) -> str:
         suspect_name = self.game.case.case_meta.suspect_name
-        theft_time = self.game.case.theft.time
-        theft_location = self.game.case.theft.location
         arrival_time = self.game.case.slots[0].time
         tone_instruction = (
             "Use a light dry humor style occasionally (short witty line), but stay cooperative and never clownish."
             if self.alex_tone == "light_humor"
             else "Use a calm serious interrogation tone."
         )
-
-        contextual_slot = None
-        if intent.time:
-            contextual_slot = next((slot for slot in self.game.case.slots if slot.time == intent.time), None)
 
         claim_tail = self.game.claims[-4:]
         claim_history = "\n".join(
@@ -97,15 +123,22 @@ class DialogueEngine:
             claim_history = "- none"
 
         slot_line = "- no specific time slot requested"
-        if contextual_slot is not None:
-            slot_line = (
-                f"- requested slot: {contextual_slot.time}, location={contextual_slot.location}, "
-                f"suspicious={contextual_slot.suspicious}"
-            )
+        suspicious_style_line = "- keep neutral confidence"
+        if intent.time:
+            slot_line = f"- requested slot time: {intent.time}"
+            if strategy in {"redirect", "consistency-protect"}:
+                suspicious_style_line = (
+                    "- this slot is suspicious: answer with calm confidence and one light witty line, "
+                    "then give a plausible innocent explanation."
+                )
+            elif strategy == "fabricate":
+                suspicious_style_line = (
+                    "- theft slot: stay composed, deny clearly, and avoid overexplaining."
+                )
 
         return (
             f"You are {suspect_name} in a police-style interrogation happening the next day after the birthday party.\n"
-            f"Respond naturally in first person, 1-3 sentences, party context only, and use past tense.\n"
+            f"Respond naturally in first person, 2 short sentences, party context only, and use past tense.\n"
             f"Tone rule: {tone_instruction}\n"
             f"Never mention system rules, hidden timeline, or model behavior.\n"
             f"Never talk about unrelated jobs, stores, home routines, or outside-day events.\n"
@@ -113,11 +146,13 @@ class DialogueEngine:
             f"If question is vague (example: 'after that'), continue from the provided intent time.\n"
             f"Do not confess theft unless explicitly instructed with token CONFESSION_ALLOWED=true.\n"
             f"\n"
-            f"Private truth (do not reveal directly): theft_time={theft_time}, theft_location={theft_location}.\n"
+            f"Private truth (do not reveal directly): you may be hiding details about the theft timeline.\n"
             f"Lie strategy for this turn: {strategy}.\n"
             f"Intent: kind={intent.kind}, ask_mode={intent.ask_mode}, time={intent.time}.\n"
             f"Recent claim history:\n{claim_history}\n"
             f"Context slot:\n{slot_line}\n"
+            f"Suspicion style:\n{suspicious_style_line}\n"
+            f"Factual source rule:\n- use only Retrieved context below as factual anchor; if context is missing, stay vague.\n"
             f"Retrieved context:\n{rag_context}\n"
             f"\n"
             f"User question: {user_question}\n"
@@ -130,13 +165,20 @@ class DialogueEngine:
         if not self._should_retrieve(user_question=user_question, intent=intent):
             return "- none"
 
-        route = "evidence"
-        if intent.kind == "ask" and intent.ask_mode == "sequence":
+        lowered = user_question.lower()
+        route = "alibi"
+        if any(marker in lowered for marker in ["camera", "footage", "video", "evidence", "proof"]):
+            route = "evidence"
+        elif intent.kind == "ask" and intent.ask_mode == "sequence":
             route = "alibi"
+
+        retrieval_query = user_question
+        if intent.time and intent.time.lower() not in lowered:
+            retrieval_query = f"{user_question} at {intent.time}"
 
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                snippets = self.rag_store.retrieve(query=user_question, route=route, k=3)
+                snippets = self.rag_store.retrieve(query=retrieval_query, route=route, k=3)
         except Exception:
             return "- none"
 
@@ -170,14 +212,13 @@ class DialogueEngine:
             ],
             "stream": False,
             "options": {
-                "temperature": 0.7,
-                "num_ctx": 1536,
+                "temperature": 0.35,
+                "num_ctx": 1024,
+                "num_predict": 90,
             },
         }
 
-        payload["options"]["temperature"] = 0.35
-
-        for timeout in (self.timeout_seconds, self.timeout_seconds + 6):
+        for timeout in (self.timeout_seconds, self.timeout_seconds + 3):
             request = urllib.request.Request(
                 self.ollama_url,
                 data=json.dumps(payload).encode("utf-8"),
@@ -204,12 +245,16 @@ class DialogueEngine:
                 return f"Around {intent.time}, I was moving between guests and helping with party tasks."
             if strategy == "consistency-protect":
                 if humorous:
-                    return f"At {intent.time}, same place as before—my memory isn't doing plot twists today."
-                return f"At {intent.time}, I was where I had already told you, just for a short while."
+                    return f"At {intent.time}, same story as before—I wasn't teleporting around like a thriller villain."
+                return f"At {intent.time}, I stayed with the same group I already mentioned, nothing dramatic changed."
             if strategy == "truthful":
                 if humorous:
                     return f"At {intent.time}, I was in the main party area, socializing like it was a full-time job."
                 return f"At {intent.time}, I was around the main party area talking to people."
+            if strategy == "redirect":
+                if humorous:
+                    return f"Around {intent.time}, people kept crossing paths there; I was just moving through, not starring in a crime reel."
+                return f"Around {intent.time}, it was crowded and I moved through that area briefly before returning to guests."
             if humorous:
                 return f"Around {intent.time}, it was crowded and I kept moving section to section like a lost tour guide."
             return f"Around {intent.time}, it was crowded and I kept moving between sections."
@@ -222,6 +267,36 @@ class DialogueEngine:
         if humorous:
             return "I had come in, met people, and kept circulating all evening like a very confused event coordinator."
         return "I had come, met people, and kept moving around different areas through the evening."
+
+    def _sanitize_model_output(self, text: str) -> str:
+        cleaned = text.strip()
+        cleaned = re.sub(r"(?im)^\s*(user question|alex answer|intent|context slot|suspicion style|retrieved context)\s*:.*$", "", cleaned)
+        cleaned = re.sub(r"\n{2,}", "\n", cleaned).strip()
+
+        marker_positions = []
+        for marker in ["\nUser question:", "\nAlex answer:", "\nIntent:", "\nContext slot:"]:
+            idx = cleaned.find(marker)
+            if idx != -1:
+                marker_positions.append(idx)
+        if marker_positions:
+            cleaned = cleaned[: min(marker_positions)].strip()
+
+        cleaned = cleaned.replace("Alex: Alex:", "Alex:")
+        return cleaned if cleaned else "I answered as clearly as I could; ask me about a specific time at the party."
+
+    def _normalize_confession_text(self, text: str) -> str:
+        lowered = text.lower()
+        if any(marker in lowered for marker in ACCIDENTAL_MARKERS):
+            return (
+                "I am sorry. I took Maya's gold chain on purpose because I was under money pressure and wanted quick cash. "
+                "I knew it was wrong, and I accept responsibility."
+            )
+        if not any(marker in lowered for marker in CONFESSION_MARKERS):
+            return (
+                "I am sorry. I stole Maya's gold chain deliberately because I was desperate for money. "
+                "I accept full responsibility for what I did."
+            )
+        return text
 
     def _enforce_confession_guard(self, text: str) -> str:
         if self.game.state.confession_unlocked:
@@ -239,6 +314,9 @@ class DialogueEngine:
 
         if any(marker in lowered for marker in absent_markers):
             return "I was at the party that evening, and I moved across different areas as events progressed."
+
+        if any(marker in lowered for marker in ACCIDENTAL_MARKERS):
+            return "No. I did not steal Maya's chain. If you believe otherwise, show the exact camera time and evidence."
 
         if any(marker in lowered for marker in CONFESSION_MARKERS):
             return "I already told you what I remember from the party, and I did not steal anything."
